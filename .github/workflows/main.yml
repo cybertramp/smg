@@ -1,0 +1,64 @@
+########################################
+# smg build Actions
+########################################
+name: Release
+on:
+  push:
+    tags:
+      - 'v*'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Extract version info
+      run: echo "##[set-output name=version;]$(echo '${{ github.event.head_commit.message }}' | egrep -o '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}')"
+      id: extract_version_name
+    - name: Setup Go build env
+      uses: actions/setup-go@v3
+      with:
+        go-version: 1.18
+    - name: Install dependencies
+      run: |
+        go get .
+    - name: Build for Linux
+      run: GOOS=linux GOARCH=amd64 go build -v -o release/smg
+    - name: Build for Windows
+      run: GOOS=windows GOARCH=amd64 go build -v -o release/smg_x64_windows
+    - name: Build for MacOS
+      run: GOOS=darwin GOARCH=arm64 go build -v -o release/smg_arm64_darwin
+    - name: Create release
+      uses: actions/create-release@v1
+      env: 
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with: 
+        tag_name: ${{ github.ref }}
+        release_name: Release ${{ github.ref }}
+        body: |
+            Changes in this Release
+            - First Change
+            - Second Change
+          draft: false
+          prerelease: false
+    - name: Upload Release Assets
+      id: upload-release-assets
+      uses: dwenegar/upload-release-assets@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        release_id: ${{ steps.create_release.outputs.id }}
+        assets_path: ./release
+
+    # - name: Create release
+    #   uses: actions/create-release@v1
+    #   env: 
+    #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    #   with: 
+    #     tag_name: ${{ github.ref }}
+    #     release_name: Release ${{ github.ref }}
+    #     body: |
+    #         Changes in this Release
+    #         - First Change
+    #         - Second Change
+    #       draft: false
+    #       prerelease: false
