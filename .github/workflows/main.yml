@@ -34,12 +34,8 @@ jobs:
       with: 
         tag_name: ${{ github.ref }}
         release_name: Release ${{ github.ref }}
-        body: |
-            Changes in this Release
-            - First Change
-            - Second Change
-          draft: false
-          prerelease: false
+        draft: false
+        prerelease: false
     - name: Upload Release Assets
       id: upload-release-assets
       uses: dwenegar/upload-release-assets@v1
