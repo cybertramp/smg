@@ -24,7 +24,7 @@ jobs:
     - name: Build for Linux
       run: GOOS=linux GOARCH=amd64 go build -v -o release/smg
     - name: Build for Windows
-      run: GOOS=windows GOARCH=amd64 go build -v -o release/smg_x64_windows
+      run: GOOS=windows GOARCH=amd64 go build -v -o release/smg_x64_windows.exe
     - name: Build for MacOS
       run: GOOS=darwin GOARCH=arm64 go build -v -o release/smg_arm64_darwin
     - name: Create release
@@ -45,17 +45,3 @@ jobs:
       with:
         release_id: ${{ steps.create_release.outputs.id }}
         assets_path: ./release
-
-    # - name: Create release
-    #   uses: actions/create-release@v1
-    #   env: 
-    #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    #   with: 
-    #     tag_name: ${{ github.ref }}
-    #     release_name: Release ${{ github.ref }}
-    #     body: |
-    #         Changes in this Release
-    #         - First Change
-    #         - Second Change
-    #       draft: false
-    #       prerelease: false
