@@ -28,6 +28,7 @@ jobs:
     - name: Build for MacOS
       run: GOOS=darwin GOARCH=arm64 go build -v -o release/smg_arm64_darwin
     - name: Create release
+      id: create_release
       uses: actions/create-release@v1
       env: 
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
