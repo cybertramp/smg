@@ -15,37 +15,39 @@ This program is SSH client program. Can simply add/delete multiple connection in
 [![asciicast](https://asciinema.org/a/F8ajcRmlMNBLjrQDnhlyQWaRo.svg)](https://asciinema.org/a/F8ajcRmlMNBLjrQDnhlyQWaRo)
 
 ## Run
+
 ```bash
 ./smg
 ```
 
-## build 
+## build 🪟
 
-### for Windows 🪟
 ```bash
+# Linux
+cd smg
+GOOS=linux GOARCH=amd64 go build -o release
+
+# Mac(ARM64)
+cd smg
+GOOS=darwin GOARCH=arm64 go build -o release
+
+# Windows
 cd smg
 GOOS=windows GOARCH=amd64 go build -o release
 ```
 
 Config file location: `/home/{USERNAME}/.smg/conn.json`
 
-### build for Linux 🐧
-```bash
-cd smg
-GOOS=linux GOARCH=amd64 go build -o release
-```
-
-Config file location: `C:\Users\{USERNAME}\.smg\conn.json`
-
-### build for Mac 🐧
-```bash
-cd smg
-
-# for arm arch
-GOOS=darwin GOARCH=arm64 go build -o release
-```
-
-Config file location: `C:\Users\{USERNAME}\.smg\conn.json`
-
 ## license
+
 This project following The MIT.
+
+## version history
+
+- 0.04 update features
+  - update **help** function
+    - This feature show help
+  - update **init** function
+    - This feature create `~/.smg/conn.json` file
+  - update **add** function
+    - This feature add item to `~/.smg/conn.json` file

@@ -1,10 +1,13 @@
-package cmd
+package tui_main
 
 import (
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"smg/cmd/comm"
+	"smg/cmd/ssh"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,6 +24,9 @@ var (
 	paginationStyle   = list.DefaultStyles().PaginationStyle.PaddingLeft(4)
 	helpStyle         = list.DefaultStyles().HelpStyle.PaddingLeft(4).PaddingBottom(1)
 	quitTextStyle     = lipgloss.NewStyle().Margin(1, 0, 2, 4)
+
+	conn_target       = comm.Conn{}
+	flag_conn		   = false
 )
 
 type item string
@@ -43,8 +49,8 @@ func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 
 	fn := itemStyle.Render
 	if index == m.Index() {
-		fn = func(s string) string {
-			return selectedItemStyle.Render("-> " + s)
+		fn = func(s ...string) string {
+			return selectedItemStyle.Render("> " + strings.Join(s, " "))
 		}
 	}
 
@@ -52,7 +58,7 @@ func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 }
 
 type Tui struct {
-	Data JsonData
+	Data comm.JsonData
     List     list.Model
 	Items    []item
 	Choice   string
@@ -72,7 +78,7 @@ func (m Tui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch keypress := msg.String(); keypress {
-		case "ctrl+d", "ctrl+c":
+		case "ctrl+d", "ctrl+c", "q":
 			m.Quitting = true
 			return m, tea.Quit
 
@@ -99,22 +105,19 @@ func (m Tui) View() string {
 		output.ClearScreen()
 		output.ShowCursor()		// Enable Cursor in shell
 		
-		if(RunSSH(m.Data.JsonData[m.ChoiceIdx]) != nil){
-			return quitTextStyle.Render("SSH Connection is Failed! 😅 ")
-		}
-		output.ClearScreen()
-		return quitTextStyle.Render("SSH Connection is closed. Bye! 👋")
+		flag_conn = true
+		conn_target = m.Data.JsonData[m.ChoiceIdx]
 	}
 
 	if m.Quitting {
 		output.ClearScreen()
-		return quitTextStyle.Render("Bye! 👋")
+		return quitTextStyle.Render("Bye! 👋(Ctrl+c)")
 	}
 
 	return "\n" + m.List.View()
 }
 
-func ConvertTuiListFromArr(json_conn JsonData) []list.Item{
+func ConvertTuiListFromArr(json_conn comm.JsonData) []list.Item{
 
 	items := []list.Item{}
 
@@ -125,7 +128,12 @@ func ConvertTuiListFromArr(json_conn JsonData) []list.Item{
     return items
 }
 
-func TuiRun(json_config JsonData) {
+func TuiRun(config_file_path string, json_config comm.JsonData) {
+
+	if len(json_config.JsonData) <=0{
+		log.Fatalln("Connection data not exist! Please run 'smg add' or add manual!")
+		log.Fatalf("(%s)\n", config_file_path)
+	}
 
     items := ConvertTuiListFromArr(json_config)
 
@@ -141,8 +149,17 @@ func TuiRun(json_config JsonData) {
 
 	m := Tui{Data: json_config, List: l}
 
-	if err := tea.NewProgram(m).Start(); err != nil {
+	if _, err := tea.NewProgram(m).Run(); err != nil {
 		log.Fatalf("Oops😓: %v", err)
 		os.Exit(1)
+	}
+
+	output := termenv.NewOutput(os.Stdout)
+
+	if flag_conn{
+		conn_err := ssh.RunSSH(conn_target)
+		if conn_err != nil {
+			output.ClearScreen()
+		}
 	}
 }

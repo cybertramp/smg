@@ -1,4 +1,4 @@
-package cmd
+package ssh
 
 import (
 	_ "bufio"
@@ -8,9 +8,11 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"smg/cmd/comm"
 	"syscall"
 	"time"
 
+	"github.com/muesli/termenv"
 	"golang.org/x/crypto/ssh"
 	terminal "golang.org/x/term"
 )
@@ -20,7 +22,7 @@ const (
 	CertPassword      = 1
 	CertPublicKeyFile = 2
 
-	DefaultTimeout = 5
+	DefaultTimeout = 3
 )
 
 type SSH struct {
@@ -36,6 +38,7 @@ type SSH struct {
 func (S *SSH) readPublicKeyFile(file string) ssh.AuthMethod {
 	buffer, err := ioutil.ReadFile(file)
 	if err != nil {
+		log.Fatalf("Key file is not extist!!(%s)", file)
 		return nil
 	}
 
@@ -59,10 +62,15 @@ func (S *SSH) Connect() error {
 			ssh.Password(S.Cert),
 		}
 	case CertPublicKeyFile:
-		// static to abs
-		auth = []ssh.AuthMethod{
-			S.readPublicKeyFile(S.Cert),
+		res := S.readPublicKeyFile(S.Cert)
+		if res != nil{
+			auth = []ssh.AuthMethod{
+				res,
+			}
+		}else{
+			os.Exit(1)
 		}
+		
 	default:
 		log.Println("Does not support cert type: ", S.Cert_Type)
 		os.Exit(-1)
@@ -79,7 +87,7 @@ func (S *SSH) Connect() error {
 
 	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", S.IP, S.Port), sshConfig)
 	if err != nil {
-		log.Println("Dial Failed:", err)
+		log.Fatalln("Error:",err)
 		return err
 	}
 
@@ -156,7 +164,6 @@ func (S *SSH) RunCmd(cmd string) {
 	out, err := S.session.CombinedOutput(cmd)
 	if err != nil {
 		log.Fatalln("Error!", err)
-
 	}
 	log.Println(string(out))
 }
@@ -164,15 +171,15 @@ func (S *SSH) RunCmd(cmd string) {
 // Session Close
 func (S *SSH) Close() {
 	if S.session.Close() != nil {
-		log.Println("Failed session slose")
+		log.Println("SSH session is closed!")
 	}
 	if S.client.Close() != nil {
-		log.Println("Failed client slose")
+		log.Println("SSH client is closed!")
 	}
 }
 
 // Run SSH Client
-func RunSSH(conn Conn) error {
+func RunSSH(conn comm.Conn) error {
 
 	client := &SSH{
 		IP:        conn.IP,
@@ -184,9 +191,17 @@ func RunSSH(conn Conn) error {
 
 	err := client.Connect()
 	if err != nil {
+		log.Println(err)
 		return err
 	}
+
+	output := termenv.NewOutput(os.Stdout)
+
 	client.Close()
+
+	output.ClearScreen()
+	output.ShowCursor()
+	log.Println("Session is closed! Bye ✋")
 
 	return err
 }
