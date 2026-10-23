@@ -1,207 +1,207 @@
 package ssh
 
 import (
-	_ "bufio"
+	"bufio"
+	"errors"
 	"fmt"
-	"io/ioutil"
-	"log"
 	"net"
 	"os"
-	"os/signal"
+	"path/filepath"
 	"smg/cmd/comm"
-	"syscall"
+	"strings"
 	"time"
 
-	"github.com/muesli/termenv"
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/agent"
+	"golang.org/x/crypto/ssh/knownhosts"
 	terminal "golang.org/x/term"
 )
 
-const (
-	CertNoPassword    = 0
-	CertPassword      = 1
-	CertPublicKeyFile = 2
+const DefaultTimeout = 3 * time.Second
 
-	DefaultTimeout = 3
-)
-
-type SSH struct {
-	IP        string
-	Port      int
-	User      string
-	Cert_Type int
-	Cert      string
-	session   *ssh.Session
-	client    *ssh.Client
+// ExitCode returns the remote exit status if err is a remote non-zero exit.
+func ExitCode(err error) (int, bool) {
+	var ee *ssh.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitStatus(), true
+	}
+	return 0, false
 }
 
-func (S *SSH) readPublicKeyFile(file string) ssh.AuthMethod {
-	buffer, err := ioutil.ReadFile(file)
-	if err != nil {
-		log.Fatalf("Key file is not extist!!(%s)", file)
-		return nil
-	}
-
-	key, err := ssh.ParsePrivateKey(buffer)
-	if err != nil {
-		return nil
-	}
-	return ssh.PublicKeys(key)
+func readPassword(prompt string) (string, error) {
+	fmt.Fprint(os.Stderr, prompt)
+	b, err := terminal.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	return string(b), err
 }
 
-// Connect the SSH Server
-func (S *SSH) Connect() error {
-	var sshConfig *ssh.ClientConfig
-	var auth []ssh.AuthMethod
+func keyAuth(file string) (ssh.AuthMethod, error) {
+	buf, err := os.ReadFile(file)
+	if err != nil {
+		return nil, fmt.Errorf("read key file (%s): %w", file, err)
+	}
 
-	switch S.Cert_Type {
-	case CertNoPassword:
-		break
-	case CertPassword:
-		auth = []ssh.AuthMethod{
-			ssh.Password(S.Cert),
+	key, err := ssh.ParsePrivateKey(buf)
+	var missing *ssh.PassphraseMissingError
+	if errors.As(err, &missing) {
+		pass, perr := readPassword(fmt.Sprintf("Passphrase for %s: ", file))
+		if perr != nil {
+			return nil, perr
 		}
-	case CertPublicKeyFile:
-		res := S.readPublicKeyFile(S.Cert)
-		if res != nil{
-			auth = []ssh.AuthMethod{
-				res,
+		key, err = ssh.ParsePrivateKeyWithPassphrase(buf, []byte(pass))
+	}
+	if err != nil {
+		return nil, fmt.Errorf("parse key file (%s): %w", file, err)
+	}
+	return ssh.PublicKeys(key), nil
+}
+
+func agentAuth() (ssh.AuthMethod, error) {
+	sock := os.Getenv("SSH_AUTH_SOCK")
+	if sock == "" {
+		return nil, errors.New("SSH_AUTH_SOCK is not set (ssh-agent not running)")
+	}
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		return nil, fmt.Errorf("connect ssh-agent: %w", err)
+	}
+	return ssh.PublicKeysCallback(agent.NewClient(conn).Signers), nil
+}
+
+func authMethod(c comm.Conn) (ssh.AuthMethod, error) {
+	switch c.CertType {
+	case comm.CertAgent:
+		return agentAuth()
+	case comm.CertPassword:
+		pass := c.Cert
+		if pass == "" {
+			var err error
+			if pass, err = readPassword(fmt.Sprintf("%s@%s password: ", c.User, c.IP)); err != nil {
+				return nil, err
 			}
-		}else{
-			os.Exit(1)
 		}
-		
-	default:
-		log.Println("Does not support cert type: ", S.Cert_Type)
-		os.Exit(-1)
+		return ssh.Password(pass), nil
+	case comm.CertKeyFile:
+		return keyAuth(c.Cert)
 	}
+	return nil, fmt.Errorf("does not support cert type: %d", c.CertType)
+}
 
-	sshConfig = &ssh.ClientConfig{
-		User: S.User,
-		Auth: auth,
-		HostKeyCallback: func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-			return nil
-		},
-		Timeout: time.Second * DefaultTimeout,
-	}
-
-	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", S.IP, S.Port), sshConfig)
+// hostKeyCallback verifies the server key against ~/.ssh/known_hosts.
+// Unknown hosts are added after user confirmation; changed keys are rejected.
+func hostKeyCallback() (ssh.HostKeyCallback, error) {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		log.Fatalln("Error:",err)
+		return nil, err
+	}
+	sshDir := filepath.Join(home, ".ssh")
+	khPath := filepath.Join(sshDir, "known_hosts")
+
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(khPath, os.O_CREATE|os.O_RDONLY, 0600)
+	if err != nil {
+		return nil, err
+	}
+	_ = f.Close()
+
+	check, err := knownhosts.New(khPath)
+	if err != nil {
+		return nil, err
+	}
+
+	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
+		err := check(hostname, remote, key)
+		var keyErr *knownhosts.KeyError
+		if !errors.As(err, &keyErr) {
+			return err
+		}
+		if len(keyErr.Want) > 0 {
+			return fmt.Errorf("HOST KEY CHANGED for %s (possible MITM): %w", hostname, err)
+		}
+
+		fmt.Printf("Unknown host %s\n%s %s\nAdd to known_hosts? (yes/no): ",
+			hostname, key.Type(), ssh.FingerprintSHA256(key))
+		answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		if strings.TrimSpace(strings.ToLower(answer)) != "yes" {
+			return errors.New("host key rejected by user")
+		}
+
+		kh, err := os.OpenFile(khPath, os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(kh, knownhosts.Line([]string{knownhosts.Normalize(hostname)}, key))
+		if cerr := kh.Close(); err == nil {
+			err = cerr
+		}
+		return err
+	}, nil
+}
+
+// Run opens an interactive shell on c. A remote non-zero exit is returned as *ssh.ExitError (see ExitCode).
+func Run(c comm.Conn) error {
+	auth, err := authMethod(c)
+	if err != nil {
 		return err
 	}
+	hostKeyCb, err := hostKeyCallback()
+	if err != nil {
+		return fmt.Errorf("known_hosts: %w", err)
+	}
+
+	client, err := ssh.Dial("tcp", net.JoinHostPort(c.IP, fmt.Sprint(c.Port)), &ssh.ClientConfig{
+		User:            c.User,
+		Auth:            []ssh.AuthMethod{auth},
+		HostKeyCallback: hostKeyCb,
+		Timeout:         DefaultTimeout,
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = client.Close() }()
 
 	session, err := client.NewSession()
 	if err != nil {
-		log.Println(err)
-		client.Close()
 		return err
 	}
+	defer func() { _ = session.Close() }()
 
 	fd := int(os.Stdin.Fd())
-
 	state, err := terminal.MakeRaw(fd)
 	if err != nil {
-		return fmt.Errorf("terminal make raw: %s", err)
+		return fmt.Errorf("terminal make raw: %w", err)
 	}
-	defer terminal.Restore(fd, state)
+	defer func() { _ = terminal.Restore(fd, state) }()
 
-	termW, termH, err := terminal.GetSize(fd)
+	w, h, err := terminal.GetSize(fd)
 	if err != nil {
-		log.Fatalf("Can't get Terminal Width, Height: %s", err)
+		return fmt.Errorf("can't get terminal size: %w", err)
 	}
 
-	S.session = session
-	S.client = client
-
-	modes := ssh.TerminalModes{
-		ssh.ECHO:          1,     // input echo
-		ssh.TTY_OP_ISPEED: 14400, // input speed = 14.4k
-		ssh.TTY_OP_OSPEED: 14400, // output speed = 14.4k
-	}
-
-	term_type := os.Getenv("TERM")
-	if term_type == "" {
-		term_type = "xterm-256color"
+	termType := os.Getenv("TERM")
+	if termType == "" {
+		termType = "xterm-256color"
 	}
 
 	session.Stdout = os.Stdout
 	session.Stderr = os.Stderr
 	session.Stdin = os.Stdin
 
-	if err := session.RequestPty(term_type, termH, termW, modes); err != nil {
-		log.Fatalf("request for pseudo terminal failed: %s", err)
+	modes := ssh.TerminalModes{
+		ssh.ECHO:          1,
+		ssh.TTY_OP_ISPEED: 14400,
+		ssh.TTY_OP_OSPEED: 14400,
 	}
-
+	if err := session.RequestPty(termType, h, w, modes); err != nil {
+		return fmt.Errorf("request for pseudo terminal failed: %w", err)
+	}
 	if err := session.Shell(); err != nil {
-		log.Fatalf("Shell is broken: %s", err)
+		return fmt.Errorf("shell start failed: %w", err)
 	}
 
-	// Control Signal
-	sigChannel := make(chan os.Signal)
-	signal.Notify(sigChannel, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		for {
-			sig, ok := <-sigChannel
-			if !ok {
-				break
-			}
-
-			switch sig {
-			case syscall.SIGINT:
-				session.Signal(ssh.SIGINT)
-			case syscall.SIGTERM:
-				session.Signal(ssh.SIGTERM)
-			}
-		}
-	}()
+	defer watchSignals(fd, session)()
 
 	return session.Wait()
-}
-
-// RunCmd to SSH Server
-func (S *SSH) RunCmd(cmd string) {
-	out, err := S.session.CombinedOutput(cmd)
-	if err != nil {
-		log.Fatalln("Error!", err)
-	}
-	log.Println(string(out))
-}
-
-// Session Close
-func (S *SSH) Close() {
-	if S.session.Close() != nil {
-		log.Println("SSH session is closed!")
-	}
-	if S.client.Close() != nil {
-		log.Println("SSH client is closed!")
-	}
-}
-
-// Run SSH Client
-func RunSSH(conn comm.Conn) error {
-
-	client := &SSH{
-		IP:        conn.IP,
-		Port:      conn.Port,
-		User:      conn.User,
-		Cert_Type: conn.Cert_Type,
-		Cert:      conn.Cert,
-	}
-
-	err := client.Connect()
-	if err != nil {
-		log.Println(err)
-		return err
-	}
-
-	output := termenv.NewOutput(os.Stdout)
-
-	client.Close()
-
-	output.ClearScreen()
-	output.ShowCursor()
-	log.Println("Session is closed! Bye ✋")
-
-	return err
 }

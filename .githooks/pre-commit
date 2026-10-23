@@ -1,0 +1,37 @@
+#!/bin/sh
+# smg pre-commit: gofmt -> build (3 targets) -> vet -> golangci-lint -> test
+# Enable: git config core.hooksPath .githooks
+
+set -e
+cd "$(git rev-parse --show-toplevel)"
+
+command -v go >/dev/null 2>&1 || { echo "pre-commit: go not found" >&2; exit 1; }
+
+# nothing to check if no Go-related file is staged
+git diff --cached --name-only --diff-filter=ACMR | grep -Eq '\.go$|^go\.(mod|sum)$' || exit 0
+
+echo "pre-commit: gofmt"
+unformatted=$(gofmt -l .)
+if [ -n "$unformatted" ]; then
+	echo "unformatted files (run 'gofmt -w .'):" >&2
+	echo "$unformatted" >&2
+	exit 1
+fi
+
+echo "pre-commit: build"
+for target in linux/amd64 windows/amd64 darwin/arm64; do
+	GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null . || { echo "build failed: $target" >&2; exit 1; }
+done
+
+echo "pre-commit: vet"
+go vet ./...
+
+if command -v golangci-lint >/dev/null 2>&1; then
+	echo "pre-commit: golangci-lint"
+	golangci-lint run ./...
+else
+	echo "pre-commit: golangci-lint not found, skipped (brew install golangci-lint)" >&2
+fi
+
+echo "pre-commit: test"
+go test ./...

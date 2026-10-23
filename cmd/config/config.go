@@ -2,119 +2,126 @@ package config
 
 import (
 	"encoding/json"
-	"errors"
-	"io/ioutil"
-	"log"
+	"fmt"
 	"os"
-	"runtime"
-	"strings"
 	"path/filepath"
 	"smg/cmd/comm"
+	"strings"
 )
 
-const (
-	ConfigWindowsFilePath = "\\.smg\\conn.json"
-	ConfigUnixFilePath = "/.smg/conn.json"
-)
-
-func GetConnFilePath() string{
-
-	homeDir, err := os.UserHomeDir()
+// Path returns ~/.smg/conn.json.
+func Path() (string, error) {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
-
-    osInfo := runtime.GOOS
-
-	filepath := ""
-
-    switch osInfo {
-	case "windows":
-		filepath =  homeDir + ConfigWindowsFilePath
-	case "linux", "darwin":
-		filepath = homeDir + ConfigUnixFilePath
-	default:
-		log.Printf("This OS type is not support! sorry!\n")
-		os.Exit(-1)
-	}
-
-	if _, err := os.Stat(filepath); err != nil {
-		log.Fatalf("Connection info file is not exist(%s)\n", filepath)
-		log.Fatalln("Please run 'smg init' 🥏")
-		os.Exit(-1)
-	}
-
-	return filepath
+	return filepath.Join(home, ".smg", "conn.json"), nil
 }
 
-func LoadConnFile(filepath string) comm.JsonData {
-	jsonFile, _ := os.Open(filepath)
-	log.Printf("Load Config file: %s\n", filepath)
-	byteValue, _ := ioutil.ReadAll(jsonFile)
-
-	var json_data comm.JsonData
-
-	json.Unmarshal(byteValue, &json_data)
-
-	// check '~' and if exist then replace home directory
-	homeDir, err := os.UserHomeDir()
+// ExistingPath is Path() but fails if the file does not exist.
+func ExistingPath() (string, error) {
+	p, err := Path()
 	if err != nil {
-		log.Fatal(err)
+		return "", err
 	}
-
-	for idx, dat := range json_data.JsonData {
-        if(strings.ContainsAny(dat.Cert, "~")){
-			json_data.JsonData[idx].Cert = strings.Replace(dat.Cert, "~", homeDir, 1)
-		}
-    }
-
-	return json_data
+	if _, err := os.Stat(p); err != nil {
+		return "", fmt.Errorf("connection file does not exist (%s): run 'smg init'", p)
+	}
+	return p, nil
 }
 
-func MakeConnFile() string{
-	filepath_str := ""
-	
-	homeDir, err := os.UserHomeDir()
+// expandHome replaces a leading '~' with the home directory.
+func expandHome(p, home string) string {
+	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {
+		return home + p[1:]
+	}
+	return p
+}
+
+func Load(path string) (comm.JsonData, error) {
+	var data comm.JsonData
+
+	b, err := os.ReadFile(path)
 	if err != nil {
-		log.Fatal(err)
+		return data, err
+	}
+	if err := json.Unmarshal(b, &data); err != nil {
+		return data, fmt.Errorf("invalid config file (%s): %w", path, err)
 	}
 
-	osInfo := runtime.GOOS
-
-	switch osInfo {
-	case "windows":
-		filepath_str =  homeDir + ConfigWindowsFilePath
-	case "linux", "darwin":
-		filepath_str = homeDir + ConfigUnixFilePath
-	default:
-		log.Printf("This OS type is not support! sorry!\n")
-		os.Exit(-1)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return data, err
 	}
-
-	if _, err := os.Stat(filepath_str); err == nil {
-		log.Println("Already exist connection config file!")
-		log.Println("-> filepath:", filepath_str)
-		return filepath_str
-	}
-
-	dir_name_str := filepath.Join(homeDir, ".smg")
-
-	if _, err := os.Stat(dir_name_str); errors.Is(err, os.ErrNotExist) {
-		err := os.Mkdir(dir_name_str, os.ModePerm)
-		if err != nil {
-			log.Println(err)
+	for i, c := range data.JsonData {
+		if c.CertType == comm.CertKeyFile {
+			data.JsonData[i].Cert = expandHome(c.Cert, home)
 		}
 	}
+	return data, nil
+}
 
-	data := comm.JsonData{[]comm.Conn{}}
-	json_data, _ := json.MarshalIndent(data,"", "    ")
-
-	err = ioutil.WriteFile(filepath_str, json_data, os.FileMode(0644))
+// Save writes atomically (temp file + rename) with 0600 permission.
+func Save(path string, data comm.JsonData) error {
+	b, err := json.MarshalIndent(data, "", "    ")
 	if err != nil {
-		log.Println(err)
+		return err
 	}
 
-	log.Println("Create config file: "+ filepath_str)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".conn-*.json")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(tmp.Name()) }() // no-op after successful rename
 
-	return filepath_str
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil { // CreateTemp already uses 0600
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
+}
+
+// Init creates an empty config file. It returns false if it already existed.
+func Init() (path string, created bool, err error) {
+	path, err = Path()
+	if err != nil {
+		return "", false, err
+	}
+	if _, err := os.Stat(path); err == nil {
+		return path, false, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return "", false, err
+	}
+	if err := Save(path, comm.JsonData{JsonData: []comm.Conn{}}); err != nil {
+		return "", false, err
+	}
+	return path, true, nil
+}
+
+// Validate checks c against the other entries (skip is the index being edited, -1 for new).
+func Validate(c comm.Conn, all []comm.Conn, skip int) error {
+	switch {
+	case c.Name == "":
+		return fmt.Errorf("name must not be empty")
+	case c.IP == "":
+		return fmt.Errorf("ip must not be empty")
+	case c.User == "":
+		return fmt.Errorf("id must not be empty")
+	case c.Port < 1 || c.Port > 65535:
+		return fmt.Errorf("invalid port: %d", c.Port)
+	case c.CertType < comm.CertAgent || c.CertType > comm.CertKeyFile:
+		return fmt.Errorf("invalid cert type: %d (0: agent / 1: PW / 2: keyfile)", c.CertType)
+	case c.CertType == comm.CertKeyFile && c.Cert == "":
+		return fmt.Errorf("keyfile path must not be empty")
+	}
+	for i, o := range all {
+		if i != skip && o.Name == c.Name {
+			return fmt.Errorf("name already exists: %s", c.Name)
+		}
+	}
+	return nil
 }
