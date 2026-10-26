@@ -18,18 +18,6 @@ func Path() (string, error) {
 	return filepath.Join(home, ".smg", "conn.json"), nil
 }
 
-// ExistingPath is Path() but fails if the file does not exist.
-func ExistingPath() (string, error) {
-	p, err := Path()
-	if err != nil {
-		return "", err
-	}
-	if _, err := os.Stat(p); err != nil {
-		return "", fmt.Errorf("connection file does not exist (%s): run 'smg init'", p)
-	}
-	return p, nil
-}
-
 // expandHome replaces a leading '~' with the home directory.
 func expandHome(p, home string) string {
 	if p == "~" || strings.HasPrefix(p, "~/") || strings.HasPrefix(p, `~\`) {

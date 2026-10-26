@@ -17,8 +17,7 @@ This program is SSH client program. Can simply add/delete multiple connection in
 ## Run
 
 ```bash
-smg          # select (type / to filter) and connect
-smg init     # create ~/.smg/conn.json
+smg          # select (type / to filter, e: edit, d: delete) and connect; creates ~/.smg/conn.json on first run
 smg add      # add item
 smg edit     # edit item
 smg delete   # delete item
@@ -38,17 +37,17 @@ Host keys are verified against `~/.ssh/known_hosts` (unknown hosts ask for confi
 ## build 🪟
 
 ```bash
+# Current platform -> ./dist/smg
+go build -o dist/smg
+
 # Linux
-cd smg
-GOOS=linux GOARCH=amd64 go build -o release
+GOOS=linux GOARCH=amd64 go build -o dist/smg
 
 # Mac(ARM64)
-cd smg
-GOOS=darwin GOARCH=arm64 go build -o release
+GOOS=darwin GOARCH=arm64 go build -o dist/smg
 
 # Windows
-cd smg
-GOOS=windows GOARCH=amd64 go build -o release
+GOOS=windows GOARCH=amd64 go build -o dist/smg.exe
 ```
 
 Config file location: `/home/{USERNAME}/.smg/conn.json`
@@ -62,6 +61,7 @@ This project following The MIT.
 - 0.1.0
   - fix: `add` saved an empty item
   - security: known_hosts verification, config file 0600 / dir 0700, atomic save
+  - change: `init` command removed; config file is created automatically on first run
   - add: `edit`, `delete`, `version`, list filtering, ssh-agent auth, key passphrase prompt, password prompt
   - add: terminal resize, remote exit code propagation, input validation (port/type/duplicate name)
   - refactor: error handling in `main` only, package rename, unit tests, CI (vet/test/govulncheck)

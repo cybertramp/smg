@@ -5,6 +5,7 @@ import (
 	"io"
 	"smg/cmd/comm"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -18,7 +19,18 @@ var (
 	itemStyle         = lipgloss.NewStyle().PaddingLeft(4)
 	selectedItemStyle = lipgloss.NewStyle().PaddingLeft(2).Foreground(lipgloss.Color("170"))
 	paginationStyle   = list.DefaultStyles().PaginationStyle.PaddingLeft(4)
+	errStyle          = lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
 	helpStyle         = list.DefaultStyles().HelpStyle.PaddingLeft(4).PaddingBottom(1)
+)
+
+// Action is what the user asked for on the selected entry.
+type Action int
+
+const (
+	ActionCancel  Action = iota
+	ActionConnect        // enter
+	ActionEdit           // e
+	ActionDelete         // d (after confirmation)
 )
 
 // item keeps the index into the original slice, so filtering does not change the result.
@@ -51,7 +63,9 @@ func (d itemDelegate) Render(w io.Writer, m list.Model, index int, listItem list
 type model struct {
 	list     list.Model
 	selected int
-	done     bool
+	action   Action
+	actions  bool   // enable e/d keys
+	confirm  string // non-empty: waiting for y/n to delete this name
 }
 
 func (m model) Init() tea.Cmd { return nil }
@@ -63,6 +77,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.confirm != "" {
+			if k := msg.String(); k == "y" || k == "Y" {
+				m.action = ActionDelete
+				return m, tea.Quit
+			}
+			m.confirm = "" // anything else cancels
+			return m, nil
+		}
 		filtering := m.list.FilterState() == list.Filtering
 		switch msg.String() {
 		case "ctrl+c", "ctrl+d":
@@ -77,9 +99,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if i, ok := m.list.SelectedItem().(item); ok {
 				m.selected = i.idx
-				m.done = true
+				m.action = ActionConnect
 			}
 			return m, tea.Quit
+		case "e", "d":
+			if filtering || !m.actions {
+				break
+			}
+			i, ok := m.list.SelectedItem().(item)
+			if !ok {
+				return m, nil
+			}
+			m.selected = i.idx
+			if msg.String() == "e" {
+				m.action = ActionEdit
+				return m, tea.Quit
+			}
+			m.confirm = i.name
+			return m, nil
 		}
 	}
 
@@ -89,14 +126,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	if m.done {
+	if m.action != ActionCancel {
 		return ""
+	}
+	if len(m.list.Items()) == 0 {
+		return "\n" + titleStyle.Render(m.list.Title) + "\n\n" +
+			itemStyle.Render("No items (Please add host)") + "\n\n" +
+			helpStyle.Render("q quit") + "\n"
+	}
+	if m.confirm != "" {
+		return "\n" + errStyle.Render(fmt.Sprintf("  Delete '%s'? (y/N)", m.confirm)) + "\n"
 	}
 	return "\n" + m.list.View()
 }
 
 // Pick shows a filterable list ('/') and returns the index of the chosen entry; ok is false if cancelled.
 func Pick(title string, conns []comm.Conn) (idx int, ok bool, err error) {
+	idx, act, err := pick(title, conns, false)
+	return idx, act == ActionConnect, err
+}
+
+// PickAction is Pick plus 'e' (edit) and 'd' (delete, confirmed with y) on the selected entry.
+func PickAction(title string, conns []comm.Conn) (idx int, act Action, err error) {
+	return pick(title, conns, true)
+}
+
+func pick(title string, conns []comm.Conn, actions bool) (int, Action, error) {
 	items := make([]list.Item, len(conns))
 	for i, c := range conns {
 		items[i] = item{idx: i, name: c.Name, label: fmt.Sprintf("%s  (%s@%s:%d)", c.Name, c.User, c.IP, c.Port)}
@@ -109,21 +164,26 @@ func Pick(title string, conns []comm.Conn) (idx int, ok bool, err error) {
 	l.Styles.Title = titleStyle
 	l.Styles.PaginationStyle = paginationStyle
 	l.Styles.HelpStyle = helpStyle
+	if actions {
+		extra := []key.Binding{
+			key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
+			key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
+		}
+		l.AdditionalShortHelpKeys = func() []key.Binding { return extra }
+		l.AdditionalFullHelpKeys = func() []key.Binding { return extra }
+	}
 
-	final, err := tea.NewProgram(model{list: l}).Run()
+	ClearScreen()
+	final, err := tea.NewProgram(model{list: l, actions: actions}).Run()
+	ClearScreen()
 	if err != nil {
-		return 0, false, err
+		return 0, ActionCancel, err
 	}
-
 	fm := final.(model)
-	if !fm.done {
-		return 0, false, nil
-	}
-
-	return fm.selected, true, nil
+	return fm.selected, fm.action, nil
 }
 
-// ClearScreen resets the terminal before handing it over to the ssh session.
+// ClearScreen clears the terminal (before/after a TUI and around the ssh session).
 func ClearScreen() {
 	out := termenv.DefaultOutput()
 	out.ClearScreen()

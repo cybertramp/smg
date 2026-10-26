@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"smg/cmd/comm"
 	"smg/cmd/config"
+	"smg/cmd/tui/tuimain"
 	"strconv"
 	"strings"
 
@@ -44,14 +45,18 @@ func newModel(conns []comm.Conn, editIdx int) model {
 	m := model{inputs: make([]textinput.Model, nFields), conns: conns, editIdx: editIdx, label: "Append"}
 
 	placeholders := [nFields]string{
-		"Name", "Ip(Url)", "Port (default 22)", "Id",
-		"Cert type(0: agent / 1: PW / 2: keyfile)",
-		"Cert(PW(blank: ask on connect) or keyfile path)",
+		"display name, e.g. web-server",
+		"hostname or IP, e.g. 192.168.0.10",
+		"default 22",
+		"ssh login username, e.g. root",
+		"0: ssh-agent / 1: password / 2: key file",
+		"",
 	}
 	for i := range m.inputs {
 		t := textinput.New()
 		t.Placeholder = placeholders[i]
 		t.CharLimit = 256
+		t.Prompt = ""
 		m.inputs[i] = t
 	}
 
@@ -67,6 +72,7 @@ func newModel(conns []comm.Conn, editIdx int) model {
 	}
 
 	m.syncEcho()
+	m.inputs[fCert].Placeholder = m.certPlaceholder()
 	m.focus(0)
 	return m
 }
@@ -78,6 +84,33 @@ func (m *model) syncEcho() {
 	} else {
 		m.inputs[fCert].EchoMode = textinput.EchoNormal
 	}
+}
+
+var fieldLabels = [nFields]string{"Name", "Host", "Port", "User", "Auth type", ""}
+
+// certLabel names the last field after the selected auth type, so it is clear what to type there.
+func (m model) certLabel() string {
+	switch strings.TrimSpace(m.inputs[fCertType].Value()) {
+	case "0":
+		return "Auth (not used: ssh-agent)"
+	case "1":
+		return "Password (blank: ask on connect)"
+	case "2":
+		return "Key file path"
+	}
+	return "Password / key file path"
+}
+
+func (m model) certPlaceholder() string {
+	switch strings.TrimSpace(m.inputs[fCertType].Value()) {
+	case "0":
+		return "leave blank"
+	case "1":
+		return "password typed here is stored in plain text"
+	case "2":
+		return "e.g. ~/.ssh/id_ed25519"
+	}
+	return "set Auth type first"
 }
 
 func (m *model) focus(idx int) tea.Cmd {
@@ -160,14 +193,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.inputs[i], cmds[i] = m.inputs[i].Update(msg)
 	}
 	m.syncEcho()
+	m.inputs[fCert].Placeholder = m.certPlaceholder()
 	return m, tea.Batch(cmds...)
 }
 
 func (m model) View() string {
 	var b strings.Builder
 	for i := range m.inputs {
-		b.WriteString(m.inputs[i].View())
-		b.WriteRune('\n')
+		label := fieldLabels[i]
+		if i == fCert {
+			label = m.certLabel()
+		}
+		style := blurredStyle
+		cursor := "  "
+		if i == m.focusIndex {
+			style, cursor = focusedStyle, "> "
+		}
+		fmt.Fprintf(&b, "%s%s\n    %s\n", cursor, style.Render(label+":"), m.inputs[i].View())
 	}
 
 	button := fmt.Sprintf("[ %s ]", blurredStyle.Render(m.label))
@@ -186,7 +228,9 @@ func (m model) View() string {
 // Run shows the form. editIdx < 0 adds a new entry, otherwise edits conns[editIdx].
 // ok is false if the user cancelled.
 func Run(conns []comm.Conn, editIdx int) (conn comm.Conn, ok bool, err error) {
+	tuimain.ClearScreen()
 	final, err := tea.NewProgram(newModel(conns, editIdx)).Run()
+	tuimain.ClearScreen()
 	if err != nil {
 		return comm.Conn{}, false, err
 	}

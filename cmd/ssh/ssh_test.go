@@ -23,23 +23,23 @@ func TestKeyAuthUnencrypted(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := authMethod(comm.Conn{CertType: comm.CertKeyFile, Cert: path}); err != nil {
+	if _, err := authMethods(comm.Conn{CertType: comm.CertKeyFile, Cert: path}, func() {}); err != nil {
 		t.Errorf("valid key rejected: %v", err)
 	}
 }
 
 func TestAuthMethodErrors(t *testing.T) {
-	if _, err := authMethod(comm.Conn{CertType: comm.CertKeyFile, Cert: "/nonexistent"}); err == nil {
+	if _, err := authMethods(comm.Conn{CertType: comm.CertKeyFile, Cert: "/nonexistent"}, func() {}); err == nil {
 		t.Error("missing key file must fail")
 	}
-	if _, err := authMethod(comm.Conn{CertType: 9}); err == nil {
+	if _, err := authMethods(comm.Conn{CertType: 9}, func() {}); err == nil {
 		t.Error("unknown cert type must fail")
 	}
 	t.Setenv("SSH_AUTH_SOCK", "")
-	if _, err := authMethod(comm.Conn{CertType: comm.CertAgent}); err == nil {
+	if _, err := authMethods(comm.Conn{CertType: comm.CertAgent}, func() {}); err == nil {
 		t.Error("agent without SSH_AUTH_SOCK must fail")
 	}
-	if m, err := authMethod(comm.Conn{CertType: comm.CertPassword, Cert: "pw"}); err != nil || m == nil {
+	if m, err := authMethods(comm.Conn{CertType: comm.CertPassword, Cert: "pw"}, func() {}); err != nil || len(m) != 2 {
 		t.Errorf("stored password: %v", err)
 	}
 }

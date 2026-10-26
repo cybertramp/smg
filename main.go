@@ -11,25 +11,28 @@ import (
 	"smg/cmd/tui/tuimain"
 )
 
-const ProgramVersion = "0.1.0"
+const ProgramVersion = "0.1.1"
 
 const help = `smg v%s
 Simple SSH Manager with Go
 Program repository: github.com/cybertramp/smg
 
-    (none): Select a connection and connect (/ to filter)
+    (none): Select a connection and connect (/ filter, e edit, d delete)
     help   : Manual for this program
-    init   : Make default connection config file
     add    : Add new connection item
     edit   : Edit connection item
     delete : Delete connection item
     version: Show version
 `
 
+// load reads the config file, creating an empty one on first run.
 func load() (string, comm.JsonData, error) {
-	path, err := config.ExistingPath()
+	path, created, err := config.Init()
 	if err != nil {
 		return "", comm.JsonData{}, err
+	}
+	if created {
+		fmt.Fprintln(os.Stderr, "Create config file:", path)
 	}
 	data, err := config.Load(path)
 	return path, data, err
@@ -40,21 +43,41 @@ func connect() error {
 	if err != nil {
 		return err
 	}
-	if len(data.JsonData) == 0 {
-		return fmt.Errorf("no connection data: run 'smg add' (%s)", path)
-	}
 
-	idx, ok, err := tuimain.Pick("Choose where to connect with ssh? 🚲", data.JsonData)
-	if err != nil || !ok {
-		return err
+	for {
+		idx, act, err := tuimain.PickAction("Choose where to connect with ssh? 🚲  (e: edit, d: delete)", data.JsonData)
+		if err != nil {
+			return err
+		}
+		switch act {
+		case tuimain.ActionEdit:
+			conn, ok, err := tuiadd.Run(data.JsonData, idx)
+			if err != nil {
+				return err
+			}
+			if ok {
+				data.JsonData[idx] = conn
+				if err := config.Save(path, data); err != nil {
+					return err
+				}
+			}
+		case tuimain.ActionDelete:
+			data.JsonData = append(data.JsonData[:idx], data.JsonData[idx+1:]...)
+			if err := config.Save(path, data); err != nil {
+				return err
+			}
+		case tuimain.ActionConnect:
+			tuimain.ClearScreen()
+			err = ssh.Run(data.JsonData[idx])
+			tuimain.ClearScreen()
+			if err == nil {
+				fmt.Println("Session is closed! Bye ✋")
+			}
+			return err
+		default:
+			return nil
+		}
 	}
-
-	tuimain.ClearScreen()
-	err = ssh.Run(data.JsonData[idx])
-	if err == nil {
-		fmt.Println("Session is closed! Bye ✋")
-	}
-	return err
 }
 
 func add() error {
@@ -114,19 +137,6 @@ func del() error {
 	return config.Save(path, data)
 }
 
-func initConfig() error {
-	path, created, err := config.Init()
-	if err != nil {
-		return err
-	}
-	if created {
-		fmt.Println("Create config file:", path)
-	} else {
-		fmt.Println("Already exist connection config file:", path)
-	}
-	return nil
-}
-
 func run(args []string) error {
 	if len(args) == 0 {
 		return connect()
@@ -136,8 +146,6 @@ func run(args []string) error {
 		fmt.Printf(help, ProgramVersion)
 	case "version", "-v", "--version":
 		fmt.Println("smg v" + ProgramVersion)
-	case "init":
-		return initConfig()
 	case "add":
 		return add()
 	case "edit":
