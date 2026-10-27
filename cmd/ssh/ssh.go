@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	DefaultTimeout    = 10 * time.Second // TCP connect + SSH handshake
+	DefaultTimeout    = 3 * time.Second // TCP connect + SSH handshake
 	keepAliveInterval = 30 * time.Second
 )
 
@@ -212,41 +212,100 @@ func knownAlgorithms(check ssh.HostKeyCallback, addr string, remote net.Addr) []
 	return algs
 }
 
-// dial connects to addr; timeout covers both TCP connect and SSH handshake.
-// pause (passed to prompts) disarms the deadline so user input is not cut off.
+// wrapTimeout turns a network timeout into a message that names the host, phase and limit.
+func wrapTimeout(addr, phase string, err error) error {
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return fmt.Errorf("%s to %s timed out after %s: %w", phase, addr, DefaultTimeout, err)
+	}
+	return err
+}
+
+// attempts is how many times dial tries to reach the host (each bounded by DefaultTimeout).
+var attempts = 3
+
+// progress prints "Connecting" followed by one "." per attempt on a single line.
+type progress struct{ open bool }
+
+func (p *progress) dot() {
+	if !p.open {
+		fmt.Fprint(os.Stderr, "Connecting")
+		p.open = true
+	}
+	fmt.Fprint(os.Stderr, ".")
+}
+
+// end finishes the line, so prompts and errors start on a fresh one.
+func (p *progress) end() {
+	if p.open {
+		fmt.Fprintln(os.Stderr)
+		p.open = false
+	}
+}
+
+// dial connects to c, retrying on network errors (not on auth or host key failures).
+// Each attempt covers TCP connect + SSH handshake and is bounded by DefaultTimeout;
+// user prompts disarm the deadline so input is not cut off.
 func dial(c comm.Conn) (*ssh.Client, error) {
 	addr := net.JoinHostPort(c.IP, fmt.Sprint(c.Port))
-	conn, err := net.DialTimeout("tcp", addr, DefaultTimeout)
-	if err != nil {
-		return nil, err
-	}
-	pause := func() { _ = conn.SetDeadline(time.Time{}) }
 
-	auth, err := authMethods(c, pause)
-	if err != nil {
-		_ = conn.Close()
-		return nil, err
-	}
-	hostKeyCb, algs, err := hostKeyCallback(addr, conn.RemoteAddr(), pause)
-	if err != nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("known_hosts: %w", err)
+	var conn net.Conn
+	var prog progress
+	defer prog.end()
+	pause := func() {
+		prog.end()
+		if conn != nil {
+			_ = conn.SetDeadline(time.Time{})
+		}
 	}
 
-	_ = conn.SetDeadline(time.Now().Add(DefaultTimeout))
-	sc, chans, reqs, err := ssh.NewClientConn(conn, addr, &ssh.ClientConfig{
-		User:              c.User,
-		Auth:              auth,
-		HostKeyCallback:   hostKeyCb,
-		HostKeyAlgorithms: algs,
-		Timeout:           DefaultTimeout,
-	})
+	auth, err := authMethods(c, pause) // may prompt (passphrase / password): once, not per attempt
 	if err != nil {
-		_ = conn.Close()
 		return nil, err
 	}
-	_ = conn.SetDeadline(time.Time{})
-	return ssh.NewClient(sc, chans, reqs), nil
+
+	// try returns retry=true for errors worth another attempt.
+	try := func() (client *ssh.Client, retry bool, err error) {
+		conn, err = net.DialTimeout("tcp", addr, DefaultTimeout)
+		if err != nil {
+			return nil, true, wrapTimeout(addr, "connect", err)
+		}
+		hostKeyCb, algs, err := hostKeyCallback(addr, conn.RemoteAddr(), pause)
+		if err != nil {
+			_ = conn.Close()
+			return nil, false, fmt.Errorf("known_hosts: %w", err)
+		}
+
+		_ = conn.SetDeadline(time.Now().Add(DefaultTimeout))
+		sc, chans, reqs, err := ssh.NewClientConn(conn, addr, &ssh.ClientConfig{
+			User:              c.User,
+			Auth:              auth,
+			HostKeyCallback:   hostKeyCb,
+			HostKeyAlgorithms: algs,
+			Timeout:           DefaultTimeout,
+		})
+		if err != nil {
+			_ = conn.Close()
+			var ne net.Error
+			return nil, errors.As(err, &ne) && ne.Timeout(), wrapTimeout(addr, "handshake", err)
+		}
+		_ = conn.SetDeadline(time.Time{})
+		return ssh.NewClient(sc, chans, reqs), false, nil
+	}
+
+	for i := 1; ; i++ {
+		prog.dot()
+		client, retry, err := try()
+		if err == nil {
+			return client, nil
+		}
+		if !retry || i >= attempts {
+			if retry && attempts > 1 {
+				err = fmt.Errorf("%w (%d attempts)", err, attempts)
+			}
+			return nil, err
+		}
+	}
 }
 
 // keepAlive probes the server until done is closed; a dead link closes client.

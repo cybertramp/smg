@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"smg/cmd/comm"
 	"testing"
+	"time"
 
 	gossh "golang.org/x/crypto/ssh"
 )
@@ -41,5 +42,20 @@ func TestAuthMethodErrors(t *testing.T) {
 	}
 	if m, err := authMethods(comm.Conn{CertType: comm.CertPassword, Cert: "pw"}, func() {}); err != nil || len(m) != 2 {
 		t.Errorf("stored password: %v", err)
+	}
+}
+
+func TestDialTimeoutMessage(t *testing.T) {
+	// 192.0.2.0/24 (TEST-NET-1) is unroutable, so the connect must hit the timeout.
+	defer func(n int) { attempts = n }(attempts)
+	attempts = 2
+	start := time.Now()
+	_, err := dial(comm.Conn{IP: "192.0.2.1", Port: 22, User: "u", CertType: comm.CertPassword, Cert: "pw"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	t.Logf("err = %v (after %s)", err, time.Since(start).Round(time.Millisecond))
+	if d := time.Since(start); d < DefaultTimeout || d > 2*DefaultTimeout+2*time.Second {
+		t.Errorf("took too long: %s", time.Since(start))
 	}
 }
