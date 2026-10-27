@@ -9,6 +9,8 @@ import (
 	"smg/cmd/ssh"
 	"smg/cmd/tui/tuiadd"
 	"smg/cmd/tui/tuimain"
+	"strings"
+	"time"
 )
 
 const ProgramVersion = "0.1.1"
@@ -17,7 +19,8 @@ const help = `smg v%s
 Simple SSH Manager with Go
 Program repository: github.com/cybertramp/smg
 
-    (none): Select a connection and connect (/ filter, e edit, d delete)
+    (none): Select a connection and connect (/ search, a add, e edit, d delete)
+    <name> : Connect directly to the item with this name (partial match ok)
     help   : Manual for this program
     add    : Add new connection item
     edit   : Edit connection item
@@ -38,18 +41,47 @@ func load() (string, comm.JsonData, error) {
 	return path, data, err
 }
 
+// connectTo records the last-used time and opens the ssh session for data.JsonData[idx].
+func connectTo(path string, data comm.JsonData, idx int) error {
+	data.JsonData[idx].LastUsed = time.Now().Unix()
+	if err := config.Save(path, data); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: can't save last-used time:", err)
+	}
+
+	tuimain.ClearScreen()
+	err := ssh.Run(data.JsonData[idx])
+	tuimain.ClearScreen()
+	if err == nil {
+		fmt.Println("Session is closed! Bye ✋")
+	}
+	return err
+}
+
 func connect() error {
 	path, data, err := load()
 	if err != nil {
 		return err
 	}
 
+	sel := -1
 	for {
-		idx, act, err := tuimain.PickAction("Choose where to connect with ssh? 🚲  (e: edit, d: delete)", data.JsonData)
+		idx, act, err := tuimain.PickAction("Choose where to connect with ssh? 🚲", data.JsonData, sel)
 		if err != nil {
 			return err
 		}
 		switch act {
+		case tuimain.ActionAdd:
+			conn, ok, err := tuiadd.Run(data.JsonData, -1)
+			if err != nil {
+				return err
+			}
+			if ok {
+				data.JsonData = append(data.JsonData, conn)
+				if err := config.Save(path, data); err != nil {
+					return err
+				}
+				sel = len(data.JsonData) - 1
+			}
 		case tuimain.ActionEdit:
 			conn, ok, err := tuiadd.Run(data.JsonData, idx)
 			if err != nil {
@@ -61,23 +93,56 @@ func connect() error {
 					return err
 				}
 			}
+			sel = idx
 		case tuimain.ActionDelete:
 			data.JsonData = append(data.JsonData[:idx], data.JsonData[idx+1:]...)
 			if err := config.Save(path, data); err != nil {
 				return err
 			}
+			sel = min(idx, len(data.JsonData)-1) // the entry that took its place
 		case tuimain.ActionConnect:
-			tuimain.ClearScreen()
-			err = ssh.Run(data.JsonData[idx])
-			tuimain.ClearScreen()
-			if err == nil {
-				fmt.Println("Session is closed! Bye ✋")
-			}
-			return err
+			return connectTo(path, data, idx)
 		default:
 			return nil
 		}
 	}
+}
+
+// connectByName connects to the entry called name: exact match (case-insensitive) first,
+// then a unique substring match; several matches open a list restricted to them.
+func connectByName(name string) error {
+	path, data, err := load()
+	if err != nil {
+		return err
+	}
+
+	var matches []int
+	needle := strings.ToLower(name)
+	for i, c := range data.JsonData {
+		switch n := strings.ToLower(c.Name); {
+		case n == needle:
+			return connectTo(path, data, i)
+		case strings.Contains(n, needle):
+			matches = append(matches, i)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return fmt.Errorf("no connection matching %q (run 'smg' to list)", name)
+	case 1:
+		return connectTo(path, data, matches[0])
+	}
+
+	subset := make([]comm.Conn, len(matches))
+	for i, idx := range matches {
+		subset[i] = data.JsonData[idx]
+	}
+	pick, ok, err := tuimain.Pick(fmt.Sprintf("Connections matching %q", name), subset)
+	if err != nil || !ok {
+		return err
+	}
+	return connectTo(path, data, matches[pick])
 }
 
 func add() error {
@@ -153,7 +218,10 @@ func run(args []string) error {
 	case "delete":
 		return del()
 	default:
-		return fmt.Errorf("unsupported command: %s (see 'smg help')", args[0])
+		if len(args) > 1 {
+			return fmt.Errorf("unsupported command: %s (see 'smg help')", args[0])
+		}
+		return connectByName(args[0])
 	}
 	return nil
 }

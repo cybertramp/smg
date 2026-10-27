@@ -11,6 +11,7 @@ type Conn struct {
 	User     string `json:"user"`
 	CertType int    `json:"cert_type"`
 	Cert     string `json:"cert"`
+	LastUsed int64  `json:"last_used,omitempty"` // unix seconds of last connect
 }
 
 const (

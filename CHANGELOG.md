@@ -14,4 +14,8 @@
 - Fix: password auth failed on servers allowing only keyboard-interactive; now supported (OTP prompts too).
 - Add: keepalive (30s), handshake timeout (10s), SIGHUP handling, UTF-8 locale env (LANG/LC_ALL) forwarding.
 - Add: `e` (edit) / `d` (delete, y to confirm) keys in the main list; list reloads after each action.
+- Add: `a` (add) key in the main list (also on the empty list); cursor stays on the edited/deleted position.
+- Add: `smg <name>` connects directly (exact, or unique partial match; several matches open a filtered list).
+- Add: list sorted by last use (`last_used` in conn.json, shown as "5m ago").
+- Add: key file auth also tries ssh-agent as fallback.
 - Deps: all updated; requires Go 1.26+.

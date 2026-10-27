@@ -17,7 +17,8 @@ This program is SSH client program. Can simply add/delete multiple connection in
 ## Run
 
 ```bash
-smg          # select (type / to filter, e: edit, d: delete) and connect; creates ~/.smg/conn.json on first run
+smg          # select (type / to search, a: add, e: edit, d: delete) and connect; creates ~/.smg/conn.json on first run
+smg <name>   # connect directly (partial name ok; several matches -> list)
 smg add      # add item
 smg edit     # edit item
 smg delete   # delete item

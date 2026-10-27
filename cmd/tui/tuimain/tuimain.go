@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"smg/cmd/comm"
+	"sort"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
@@ -31,6 +33,7 @@ const (
 	ActionConnect        // enter
 	ActionEdit           // e
 	ActionDelete         // d (after confirmation)
+	ActionAdd            // a
 )
 
 // item keeps the index into the original slice, so filtering does not change the result.
@@ -64,7 +67,7 @@ type model struct {
 	list     list.Model
 	selected int
 	action   Action
-	actions  bool   // enable e/d keys
+	actions  bool   // enable a/e/d keys
 	confirm  string // non-empty: waiting for y/n to delete this name
 }
 
@@ -102,6 +105,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.action = ActionConnect
 			}
 			return m, tea.Quit
+		case "a":
+			if filtering || !m.actions {
+				break
+			}
+			m.action = ActionAdd
+			return m, tea.Quit
 		case "e", "d":
 			if filtering || !m.actions {
 				break
@@ -132,7 +141,7 @@ func (m model) View() string {
 	if len(m.list.Items()) == 0 {
 		return "\n" + titleStyle.Render(m.list.Title) + "\n\n" +
 			itemStyle.Render("No items (Please add host)") + "\n\n" +
-			helpStyle.Render("q quit") + "\n"
+			helpStyle.Render(emptyHelp(m.actions)) + "\n"
 	}
 	if m.confirm != "" {
 		return "\n" + errStyle.Render(fmt.Sprintf("  Delete '%s'? (y/N)", m.confirm)) + "\n"
@@ -140,32 +149,81 @@ func (m model) View() string {
 	return "\n" + m.list.View()
 }
 
+func emptyHelp(actions bool) string {
+	if actions {
+		return "a add • q quit"
+	}
+	return "q quit"
+}
+
+// ago renders a unix timestamp as a short relative time ("" if never).
+func ago(ts int64) string {
+	if ts == 0 {
+		return ""
+	}
+	d := time.Since(time.Unix(ts, 0))
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	}
+	return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+}
+
 // Pick shows a filterable list ('/') and returns the index of the chosen entry; ok is false if cancelled.
 func Pick(title string, conns []comm.Conn) (idx int, ok bool, err error) {
-	idx, act, err := pick(title, conns, false)
+	idx, act, err := pick(title, conns, false, -1)
 	return idx, act == ActionConnect, err
 }
 
-// PickAction is Pick plus 'e' (edit) and 'd' (delete, confirmed with y) on the selected entry.
-func PickAction(title string, conns []comm.Conn) (idx int, act Action, err error) {
-	return pick(title, conns, true)
+// PickAction is Pick plus 'a' (add), 'e' (edit) and 'd' (delete, confirmed with y).
+// sel is the conns index to place the cursor on (-1: first entry).
+func PickAction(title string, conns []comm.Conn, sel int) (idx int, act Action, err error) {
+	return pick(title, conns, true, sel)
 }
 
-func pick(title string, conns []comm.Conn, actions bool) (int, Action, error) {
+func pick(title string, conns []comm.Conn, actions bool, sel int) (int, Action, error) {
+	// most recently used first; never-used entries keep their file order
+	order := make([]int, len(conns))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool { return conns[order[a]].LastUsed > conns[order[b]].LastUsed })
+
 	items := make([]list.Item, len(conns))
-	for i, c := range conns {
-		items[i] = item{idx: i, name: c.Name, label: fmt.Sprintf("%s  (%s@%s:%d)", c.Name, c.User, c.IP, c.Port)}
+	cursor := 0
+	for pos, i := range order {
+		c := conns[i]
+		label := fmt.Sprintf("%s  (%s@%s:%d)", c.Name, c.User, c.IP, c.Port)
+		if t := ago(c.LastUsed); t != "" {
+			label += "  · " + t
+		}
+		items[pos] = item{idx: i, name: c.Name, label: label}
+		if i == sel {
+			cursor = pos
+		}
 	}
 
 	l := list.New(items, itemDelegate{}, 20, listHeight)
 	l.Title = title
+	l.Select(cursor)
 	l.SetShowStatusBar(false)
 	l.SetFilteringEnabled(true)
+	// the list's "filter" is a name search; label it that way
+	l.FilterInput.Prompt = "Search: "
+	l.KeyMap.Filter.SetHelp("/", "search")
+	l.KeyMap.ClearFilter.SetHelp("esc", "clear search")
+	l.KeyMap.AcceptWhileFiltering.SetHelp("enter", "apply search")
+	l.KeyMap.CancelWhileFiltering.SetHelp("esc", "cancel search")
 	l.Styles.Title = titleStyle
 	l.Styles.PaginationStyle = paginationStyle
 	l.Styles.HelpStyle = helpStyle
 	if actions {
 		extra := []key.Binding{
+			key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
 			key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
 			key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
 		}

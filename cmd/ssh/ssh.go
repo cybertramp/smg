@@ -116,7 +116,14 @@ func authMethods(c comm.Conn, pause func()) ([]ssh.AuthMethod, error) {
 		return []ssh.AuthMethod{ssh.Password(pass), ki}, nil
 	case comm.CertKeyFile:
 		m, err := keyAuth(c.Cert)
-		return []ssh.AuthMethod{m}, err
+		if err != nil {
+			return nil, err
+		}
+		methods := []ssh.AuthMethod{m}
+		if am, aerr := agentAuth(); aerr == nil { // fallback if the key is not accepted
+			methods = append(methods, am)
+		}
+		return methods, nil
 	}
 	return nil, fmt.Errorf("does not support cert type: %d", c.CertType)
 }

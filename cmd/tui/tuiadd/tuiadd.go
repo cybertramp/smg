@@ -101,6 +101,22 @@ func (m model) certLabel() string {
 	return "Password / key file path"
 }
 
+// certTypeHint lists every auth type and highlights the one currently typed.
+func (m model) certTypeHint() string {
+	cur := strings.TrimSpace(m.inputs[fCertType].Value())
+	opts := []struct{ n, name string }{{"0", "ssh-agent"}, {"1", "password"}, {"2", "key file"}}
+	parts := make([]string, len(opts))
+	for i, o := range opts {
+		text := o.n + ": " + o.name
+		if o.n == cur {
+			parts[i] = focusedStyle.Render("[" + text + "]")
+		} else {
+			parts[i] = blurredStyle.Render(text)
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
 func (m model) certPlaceholder() string {
 	switch strings.TrimSpace(m.inputs[fCertType].Value()) {
 	case "0":
@@ -151,6 +167,9 @@ func (m model) build() (comm.Conn, error) {
 		User:     strings.TrimSpace(m.inputs[fUser].Value()),
 		CertType: certType,
 		Cert:     m.inputs[fCert].Value(),
+	}
+	if m.editIdx >= 0 {
+		c.LastUsed = m.conns[m.editIdx].LastUsed
 	}
 	return c, config.Validate(c, m.conns, m.editIdx)
 }
@@ -210,6 +229,9 @@ func (m model) View() string {
 			style, cursor = focusedStyle, "> "
 		}
 		fmt.Fprintf(&b, "%s%s\n    %s\n", cursor, style.Render(label+":"), m.inputs[i].View())
+		if i == fCertType {
+			b.WriteString("    " + m.certTypeHint() + "\n")
+		}
 	}
 
 	button := fmt.Sprintf("[ %s ]", blurredStyle.Render(m.label))
