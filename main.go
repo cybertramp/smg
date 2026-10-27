@@ -19,7 +19,7 @@ const help = `smg v%s
 Simple SSH Manager with Go
 Program repository: github.com/cybertramp/smg
 
-    (none): Select a connection and connect (/ search, a add, e edit, d delete)
+    (none): Select a connection and connect (/ search all pods, a add, e edit, d delete, m move, p new pod)
     <name> : Connect directly to the item with this name (partial match ok)
     help   : Manual for this program
     add    : Add new connection item
@@ -41,15 +41,16 @@ func load() (string, comm.JsonData, error) {
 	return path, data, err
 }
 
-// connectTo records the last-used time and opens the ssh session for data.JsonData[idx].
-func connectTo(path string, data comm.JsonData, idx int) error {
-	data.JsonData[idx].LastUsed = time.Now().Unix()
+// connectTo records the last-used time and opens the ssh session for the connection at pod/idx.
+func connectTo(path string, data comm.JsonData, pod []string, idx int) error {
+	conns, _, _ := data.Level(pod)
+	(*conns)[idx].LastUsed = time.Now().Unix()
 	if err := config.Save(path, data); err != nil {
 		fmt.Fprintln(os.Stderr, "warning: can't save last-used time:", err)
 	}
 
 	tuimain.ClearScreen()
-	err := ssh.Run(data.JsonData[idx])
+	err := ssh.Run((*conns)[idx])
 	tuimain.ClearScreen()
 	if err == nil {
 		fmt.Println("Session is closed! Bye ✋")
@@ -57,92 +58,162 @@ func connectTo(path string, data comm.JsonData, idx int) error {
 	return err
 }
 
+// connect is the main screen: browse pods, connect, and add/edit/delete/move entries.
 func connect() error {
 	path, data, err := load()
 	if err != nil {
 		return err
 	}
 
-	sel := -1
+	var st tuimain.State
 	for {
-		idx, act, err := tuimain.PickAction("Choose where to connect with ssh? 🚲", data.JsonData, sel)
+		res, err := tuimain.Browse("Choose where to connect with ssh? 🚲", data, st)
 		if err != nil {
 			return err
 		}
-		switch act {
-		case tuimain.ActionAdd:
-			conn, ok, err := tuiadd.Run(data.JsonData, -1)
-			if err != nil {
-				return err
-			}
-			if ok {
-				data.JsonData = append(data.JsonData, conn)
-				if err := config.Save(path, data); err != nil {
-					return err
-				}
-				sel = len(data.JsonData) - 1
-			}
-		case tuimain.ActionEdit:
-			conn, ok, err := tuiadd.Run(data.JsonData, idx)
-			if err != nil {
-				return err
-			}
-			if ok {
-				data.JsonData[idx] = conn
-				if err := config.Save(path, data); err != nil {
-					return err
-				}
-			}
-			sel = idx
-		case tuimain.ActionDelete:
-			data.JsonData = append(data.JsonData[:idx], data.JsonData[idx+1:]...)
+		st = tuimain.State{Path: res.Browse}
+
+		save := func() {
 			if err := config.Save(path, data); err != nil {
+				st.Notice = "save failed: " + err.Error()
+			}
+		}
+		fail := func(err error) { st.Notice = err.Error() }
+
+		switch res.Action {
+		case tuimain.ActionAdd:
+			conn, dest, ok, err := tuiadd.Run(data, res.Browse, -1)
+			if err != nil {
 				return err
 			}
-			sel = min(idx, len(data.JsonData)-1) // the entry that took its place
+			if !ok {
+				continue
+			}
+			idx, err := data.PutConn(nil, -1, conn, dest)
+			if err != nil {
+				fail(err)
+				continue
+			}
+			save()
+			st = tuimain.State{Path: dest, HasSel: true, SelIdx: idx}
+
+		case tuimain.ActionEdit:
+			if res.IsPod {
+				_, pods, _ := data.Level(res.Path)
+				name, ok, err := tuimain.Prompt("Rename pod", (*pods)[res.Idx].Name)
+				if err != nil {
+					return err
+				}
+				if !ok {
+					continue
+				}
+				if err := data.RenamePod(res.Path, res.Idx, name); err != nil {
+					fail(err)
+					continue
+				}
+				save()
+				st.HasSel, st.SelPod, st.SelIdx = true, true, res.Idx
+				continue
+			}
+			conn, dest, ok, err := tuiadd.Run(data, res.Path, res.Idx)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			idx, err := data.PutConn(res.Path, res.Idx, conn, dest)
+			if err != nil {
+				fail(err)
+				continue
+			}
+			save()
+			if comm.PathEqual(dest, res.Browse) {
+				st.HasSel, st.SelIdx = true, idx
+			}
+
+		case tuimain.ActionMove:
+			conns, _, _ := data.Level(res.Path)
+			conn := (*conns)[res.Idx]
+			paths := data.PodPaths()
+			n, ok, err := tuimain.PickPod(fmt.Sprintf("Move '%s' to", conn.Name), paths)
+			if err != nil {
+				return err
+			}
+			if !ok || comm.PathEqual(paths[n], res.Path) {
+				continue
+			}
+			if _, err := data.PutConn(res.Path, res.Idx, conn, paths[n]); err != nil {
+				fail(err)
+				continue
+			}
+			save()
+
+		case tuimain.ActionNewPod:
+			name, ok, err := tuimain.Prompt("New pod name (a/b creates nested pods)", "")
+			if err != nil {
+				return err
+			}
+			if !ok {
+				continue
+			}
+			if err := data.AddPod(res.Browse, name); err != nil {
+				fail(err)
+				continue
+			}
+			save()
+
+		case tuimain.ActionDelete:
+			if res.IsPod {
+				data.RemovePod(res.Path, res.Idx)
+			} else {
+				data.RemoveConn(res.Path, res.Idx)
+			}
+			save()
+
 		case tuimain.ActionConnect:
-			return connectTo(path, data, idx)
+			return connectTo(path, data, res.Path, res.Idx)
+
 		default:
 			return nil
 		}
 	}
 }
 
-// connectByName connects to the entry called name: exact match (case-insensitive) first,
-// then a unique substring match; several matches open a list restricted to them.
+// connectByName connects to the entry called name in any pod: a unique exact match (case-insensitive)
+// first, then a unique partial match; otherwise a list of the candidates opens.
 func connectByName(name string) error {
 	path, data, err := load()
 	if err != nil {
 		return err
 	}
 
-	var matches []int
+	var exact, partial []comm.Entry
 	needle := strings.ToLower(name)
-	for i, c := range data.JsonData {
-		switch n := strings.ToLower(c.Name); {
+	for _, e := range data.Flatten() {
+		switch n := strings.ToLower(e.Conn.Name); {
 		case n == needle:
-			return connectTo(path, data, i)
+			exact = append(exact, e)
 		case strings.Contains(n, needle):
-			matches = append(matches, i)
+			partial = append(partial, e)
 		}
 	}
+	cands := exact
+	if len(cands) == 0 {
+		cands = partial
+	}
 
-	switch len(matches) {
+	switch len(cands) {
 	case 0:
 		return fmt.Errorf("no connection matching %q (run 'smg' to list)", name)
 	case 1:
-		return connectTo(path, data, matches[0])
+		return connectTo(path, data, cands[0].Path, cands[0].Idx)
 	}
-
-	subset := make([]comm.Conn, len(matches))
-	for i, idx := range matches {
-		subset[i] = data.JsonData[idx]
-	}
-	pick, ok, err := tuimain.Pick(fmt.Sprintf("Connections matching %q", name), subset)
+	pick, ok, err := tuimain.Pick(fmt.Sprintf("Connections matching %q", name), cands)
 	if err != nil || !ok {
 		return err
 	}
-	return connectTo(path, data, matches[pick])
+	return connectTo(path, data, cands[pick].Path, cands[pick].Idx)
 }
 
 func add() error {
@@ -150,12 +221,27 @@ func add() error {
 	if err != nil {
 		return err
 	}
-	conn, ok, err := tuiadd.Run(data.JsonData, -1)
+	conn, dest, ok, err := tuiadd.Run(data, nil, -1)
 	if err != nil || !ok {
 		return err
 	}
-	data.JsonData = append(data.JsonData, conn)
+	if _, err := data.PutConn(nil, -1, conn, dest); err != nil {
+		return err
+	}
 	return config.Save(path, data)
+}
+
+// pickEntry lets the user choose any connection in the tree.
+func pickEntry(title string, data comm.JsonData) (comm.Entry, bool, error) {
+	entries := data.Flatten()
+	if len(entries) == 0 {
+		return comm.Entry{}, false, errors.New("no connection data")
+	}
+	i, ok, err := tuimain.Pick(title, entries)
+	if err != nil || !ok {
+		return comm.Entry{}, false, err
+	}
+	return entries[i], true, nil
 }
 
 func edit() error {
@@ -163,18 +249,17 @@ func edit() error {
 	if err != nil {
 		return err
 	}
-	if len(data.JsonData) == 0 {
-		return errors.New("no connection data")
-	}
-	idx, ok, err := tuimain.Pick("Choose an item to edit", data.JsonData)
+	e, ok, err := pickEntry("Choose an item to edit", data)
 	if err != nil || !ok {
 		return err
 	}
-	conn, ok, err := tuiadd.Run(data.JsonData, idx)
+	conn, dest, ok, err := tuiadd.Run(data, e.Path, e.Idx)
 	if err != nil || !ok {
 		return err
 	}
-	data.JsonData[idx] = conn
+	if _, err := data.PutConn(e.Path, e.Idx, conn, dest); err != nil {
+		return err
+	}
 	return config.Save(path, data)
 }
 
@@ -183,22 +268,18 @@ func del() error {
 	if err != nil {
 		return err
 	}
-	if len(data.JsonData) == 0 {
-		return errors.New("no connection data")
-	}
-	idx, ok, err := tuimain.Pick("Choose an item to DELETE", data.JsonData)
+	e, ok, err := pickEntry("Choose an item to DELETE", data)
 	if err != nil || !ok {
 		return err
 	}
-	name := data.JsonData[idx].Name
-	fmt.Printf("Delete '%s'? (yes/no): ", name)
+	fmt.Printf("Delete '%s'? (yes/no): ", e.Conn.Name)
 	var answer string
 	_, _ = fmt.Scanln(&answer)
 	if answer != "yes" {
 		fmt.Println("Cancelled")
 		return nil
 	}
-	data.JsonData = append(data.JsonData[:idx], data.JsonData[idx+1:]...)
+	data.RemoveConn(e.Path, e.Idx)
 	return config.Save(path, data)
 }
 

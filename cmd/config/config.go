@@ -41,11 +41,11 @@ func Load(path string) (comm.JsonData, error) {
 	if err != nil {
 		return data, err
 	}
-	for i, c := range data.JsonData {
+	data.EachConn(func(c *comm.Conn) {
 		if c.CertType == comm.CertKeyFile {
-			data.JsonData[i].Cert = expandHome(c.Cert, home)
+			c.Cert = expandHome(c.Cert, home)
 		}
-	}
+	})
 	return data, nil
 }
 

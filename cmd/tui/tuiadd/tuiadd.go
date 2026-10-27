@@ -22,6 +22,7 @@ var (
 
 const (
 	fName = iota
+	fPod
 	fIP
 	fPort
 	fUser
@@ -33,19 +34,22 @@ const (
 type model struct {
 	focusIndex int
 	inputs     []textinput.Model
-	conns      []comm.Conn // existing entries (for validation)
-	editIdx    int         // -1 when adding
+	data       comm.JsonData // whole tree (for validation)
+	pod        []string      // pod the entry being edited lives in
+	editIdx    int           // -1 when adding
 	label      string
 	result     comm.Conn
+	resultPod  []string
 	submitted  bool
 	err        error
 }
 
-func newModel(conns []comm.Conn, editIdx int) model {
-	m := model{inputs: make([]textinput.Model, nFields), conns: conns, editIdx: editIdx, label: "Append"}
+func newModel(data comm.JsonData, pod []string, editIdx int) model {
+	m := model{inputs: make([]textinput.Model, nFields), data: data, pod: pod, editIdx: editIdx, label: "Append"}
 
 	placeholders := [nFields]string{
 		"display name, e.g. web-server",
+		"folder, e.g. prod/web (blank: top level, created if missing)",
 		"hostname or IP, e.g. 192.168.0.10",
 		"default 22",
 		"ssh login username, e.g. root",
@@ -60,8 +64,10 @@ func newModel(conns []comm.Conn, editIdx int) model {
 		m.inputs[i] = t
 	}
 
+	m.inputs[fPod].SetValue(comm.JoinPath(pod))
 	if editIdx >= 0 {
-		c := conns[editIdx]
+		conns, _, _ := data.Level(pod)
+		c := (*conns)[editIdx]
 		m.label = "Save"
 		m.inputs[fName].SetValue(c.Name)
 		m.inputs[fIP].SetValue(c.IP)
@@ -86,7 +92,7 @@ func (m *model) syncEcho() {
 	}
 }
 
-var fieldLabels = [nFields]string{"Name", "Host", "Port", "User", "Auth type", ""}
+var fieldLabels = [nFields]string{"Name", "Pod", "Host", "Port", "User", "Auth type", ""}
 
 // certLabel names the last field after the selected auth type, so it is clear what to type there.
 func (m model) certLabel() string {
@@ -146,6 +152,8 @@ func (m *model) focus(idx int) tea.Cmd {
 	return cmd
 }
 
+func (m model) destPod() []string { return comm.ParsePath(m.inputs[fPod].Value()) }
+
 func (m model) build() (comm.Conn, error) {
 	port := comm.DefaultPort
 	if v := strings.TrimSpace(m.inputs[fPort].Value()); v != "" {
@@ -168,10 +176,20 @@ func (m model) build() (comm.Conn, error) {
 		CertType: certType,
 		Cert:     m.inputs[fCert].Value(),
 	}
-	if m.editIdx >= 0 {
-		c.LastUsed = m.conns[m.editIdx].LastUsed
+	dest := m.destPod()
+	var siblings []comm.Conn // names are unique per pod
+	if conns, _, ok := m.data.Level(dest); ok {
+		siblings = *conns
 	}
-	return c, config.Validate(c, m.conns, m.editIdx)
+	skip := -1
+	if m.editIdx >= 0 {
+		pc, _, _ := m.data.Level(m.pod)
+		c.LastUsed = (*pc)[m.editIdx].LastUsed
+		if comm.PathEqual(dest, m.pod) {
+			skip = m.editIdx
+		}
+	}
+	return c, config.Validate(c, siblings, skip)
 }
 
 func (m model) Init() tea.Cmd { return textinput.Blink }
@@ -189,7 +207,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.err = err
 					return m, nil
 				}
-				m.result, m.submitted = c, true
+				m.result, m.resultPod, m.submitted = c, m.destPod(), true
 				return m, tea.Quit
 			}
 
@@ -247,15 +265,16 @@ func (m model) View() string {
 	return b.String()
 }
 
-// Run shows the form. editIdx < 0 adds a new entry, otherwise edits conns[editIdx].
-// ok is false if the user cancelled.
-func Run(conns []comm.Conn, editIdx int) (conn comm.Conn, ok bool, err error) {
+// Run shows the form for pod `pod`. editIdx < 0 adds a new entry, otherwise edits entry
+// editIdx of that pod. It returns the entry and the pod chosen in the form (a different
+// pod means "move"); ok is false if the user cancelled.
+func Run(data comm.JsonData, pod []string, editIdx int) (conn comm.Conn, dest []string, ok bool, err error) {
 	tuimain.ClearScreen()
-	final, err := tea.NewProgram(newModel(conns, editIdx)).Run()
+	final, err := tea.NewProgram(newModel(data, pod, editIdx)).Run()
 	tuimain.ClearScreen()
 	if err != nil {
-		return comm.Conn{}, false, err
+		return comm.Conn{}, nil, false, err
 	}
 	fm := final.(model)
-	return fm.result, fm.submitted, nil
+	return fm.result, fm.resultPod, fm.submitted, nil
 }

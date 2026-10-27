@@ -18,12 +18,29 @@ This program is SSH client program. Can simply add/delete multiple connection in
 
 ```bash
 smg          # select (type / to search, a: add, e: edit, d: delete) and connect; creates ~/.smg/conn.json on first run
-smg <name>   # connect directly (partial name ok; several matches -> list)
+smg <name>   # connect directly (searches all pods) (partial name ok; several matches -> list)
 smg add      # add item
 smg edit     # edit item
 smg delete   # delete item
 smg version
 ```
+
+## Pods (directories)
+
+Group connections in nested pods. In the main list:
+
+| key | action |
+|-----|--------|
+| enter | open a pod / connect |
+| backspace | up one pod |
+| `/` | search every pod |
+| `a` | add to the current pod (the form has a `Pod` field, e.g. `prod/web`, created if missing) |
+| `p` | new pod (`a/b` creates nested pods) |
+| `e` | edit a connection / rename a pod |
+| `m` | move a connection to another pod |
+| `d` | delete a connection / a pod with everything inside |
+
+Connection names are unique per pod. `conn.json` stores pods as a `pods` tree next to `conn`; files without it still work.
 
 ## Authentication (`cert_type`)
 

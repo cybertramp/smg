@@ -1,7 +1,17 @@
 package comm
 
+// JsonData is the root pod: top-level connections plus nested pods (directories).
+// Files written before pods existed have no "pods" key and load unchanged.
 type JsonData struct {
 	JsonData []Conn `json:"conn"`
+	Pods     []Pod  `json:"pods,omitempty"`
+}
+
+// Pod groups connections and child pods.
+type Pod struct {
+	Name string `json:"name"`
+	Conn []Conn `json:"conn,omitempty"`
+	Pods []Pod  `json:"pods,omitempty"`
 }
 
 type Conn struct {

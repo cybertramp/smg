@@ -18,4 +18,8 @@
 - Add: `smg <name>` connects directly (exact, or unique partial match; several matches open a filtered list).
 - Add: list sorted by last use (`last_used` in conn.json, shown as "5m ago").
 - Add: key file auth also tries ssh-agent as fallback.
+- Add: pods (nested directories) for connections. `conn.json` gets an optional `pods` tree (`{"name","conn","pods"}`); old files load unchanged.
+  - enter opens a pod, backspace goes up, `/` searches every pod, `p` new pod, `e` renames a pod, `d` deletes it with its content, `m` moves a connection, `a` adds to the current pod.
+  - add/edit form has a `Pod` field (`prod/web`, created if missing); names are unique per pod.
+  - `smg <name>`, `smg edit`, `smg delete` work across all pods.
 - Deps: all updated; requires Go 1.26+.

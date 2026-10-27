@@ -99,3 +99,25 @@ func TestValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestPodsRoundTripExpandsNestedKeyPath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := filepath.Join(t.TempDir(), "conn.json")
+
+	var in comm.JsonData
+	if _, err := in.PutConn(nil, -1, comm.Conn{Name: "a", IP: "h", Port: 22, User: "u", CertType: comm.CertKeyFile, Cert: "~/k"}, []string{"prod", "web"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Save(path, in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, _ := os.UserHomeDir()
+	conns, _, ok := out.Level([]string{"prod", "web"})
+	if !ok || len(*conns) != 1 || (*conns)[0].Cert != home+"/k" {
+		t.Errorf("nested conn not loaded/expanded: %+v", out)
+	}
+}
